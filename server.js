@@ -46,6 +46,14 @@ app.get('/api/rides', (req, res) => {
   res.json(RIDES);
 });
 
+// ---------- public: config ----------
+// Lets the frontend know whether to show the real Razorpay checkout or the
+// no-payment demo flow. Controlled entirely by the DEMO_MODE env var —
+// leave it unset (or "false") for real payments.
+app.get('/api/config', (req, res) => {
+  res.json({ demoMode: process.env.DEMO_MODE === 'true' });
+});
+
 // ---------- payments: create order ----------
 // Guest sends what's in their cart; server recalculates the price from
 // rides.js (never trusts a price sent by the client) and asks Razorpay
@@ -167,6 +175,40 @@ app.post('/api/dev/create-tickets', requireKey('ADMIN_KEY'), async (req, res) =>
   } catch (err) {
     console.error('dev ticket create failed', err);
     res.status(500).json({ error: 'Could not create dev tickets' });
+  }
+});
+
+// ---------- demo: create tickets with no real payment ----------
+// Only active when DEMO_MODE=true in the environment. Lets you demo the
+// full booking → scan → admin flow without touching Razorpay at all.
+// Turn this OFF (unset DEMO_MODE, or set it to "false") before real launch.
+app.post('/api/tickets/demo-create', async (req, res) => {
+  if (process.env.DEMO_MODE !== 'true') {
+    return res.status(403).json({ error: 'Demo mode is not enabled' });
+  }
+  try {
+    const items = req.body.items || [];
+    const insert = db.prepare(`
+      INSERT INTO tickets (code, ride_id, ride_name, price, status, razorpay_order_id, razorpay_payment_id, created_at)
+      VALUES (?, ?, ?, ?, 'valid', 'DEMO', 'DEMO', ?)
+    `);
+    const tickets = [];
+    for (const item of items) {
+      const ride = findRide(item.rideId);
+      if (!ride) continue;
+      const qty = Math.max(0, parseInt(item.qty, 10) || 0);
+      for (let i = 0; i < qty; i++) {
+        const code = genCode();
+        const createdAt = Date.now();
+        insert.run(code, ride.id, ride.name, ride.price, createdAt);
+        const qrDataUrl = await QRCode.toDataURL(code, { margin: 2, width: 220 });
+        tickets.push({ code, rideId: ride.id, rideName: ride.name, price: ride.price, status: 'valid', createdAt, qrDataUrl });
+      }
+    }
+    res.json({ tickets });
+  } catch (err) {
+    console.error('demo create failed', err);
+    res.status(500).json({ error: 'Could not create demo tickets' });
   }
 });
 
