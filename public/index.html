@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jalalpur Fun — Book a Ride</title>
+<link rel="stylesheet" href="/styles.css" />
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">JALALPUR<span> FUN</span></div>
+  <div class="tagline">Book a ride — pay once, ride, tap to re-ride</div>
+  <div style="margin-bottom:18px;">
+    <a class="nav-link" href="/staff.html">Staff Scanner</a>
+    <a class="nav-link" href="/admin.html">Admin Dashboard</a>
+  </div>
+
+  <div id="ride-grid" class="ride-grid"></div>
+
+  <div class="cart-bar">
+    <div>
+      <div style="font-size:11px;color:var(--chalk-dim);text-transform:uppercase;" id="cart-count">0 rides selected</div>
+      <div class="cart-total" id="cart-total">₹0</div>
+    </div>
+    <button class="btn-primary" id="pay-btn" disabled>Pay via UPI</button>
+  </div>
+
+  <div id="dev-panel" style="display:none;max-width:420px;margin:0 auto 20px;text-align:center;">
+    <button class="btn-secondary" id="dev-skip-btn" style="width:100%;">🛠 Dev: Skip Payment (bypasses Razorpay)</button>
+    <div class="note">Only for testing while Razorpay account issues are being sorted. Requires your admin key. Remove this before going live.</div>
+  </div>
+
+  <div id="tickets-area"></div>
+</div>
+
+<script>
+const cart = {};
+let RIDES = [];
+
+async function loadRides() {
+  const res = await fetch('/api/rides');
+  RIDES = await res.json();
+  renderRides();
+}
+
+function renderRides() {
+  const grid = document.getElementById('ride-grid');
+  grid.innerHTML = RIDES.map(r => `
+    <div class="ride-card">
+      <div class="ride-name">${r.name}</div>
+      <div class="ride-price">₹${r.price} / ride</div>
+      <div class="qty-row">
+        <button class="qty-btn" data-act="dec" data-ride="${r.id}">−</button>
+        <span class="qty-val" id="qty-${r.id}">${cart[r.id]||0}</span>
+        <button class="qty-btn" data-act="inc" data-ride="${r.id}">+</button>
+      </div>
+    </div>
+  `).join('');
+  grid.querySelectorAll('.qty-btn').forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.dataset.ride;
+      const cur = cart[id] || 0;
+      cart[id] = btn.dataset.act === 'inc' ? cur + 1 : Math.max(0, cur - 1);
+      document.getElementById('qty-' + id).textContent = cart[id];
+      updateCartBar();
+    };
+  });
+}
+
+function updateCartBar() {
+  let total = 0, count = 0;
+  RIDES.forEach(r => { const q = cart[r.id]||0; total += q*r.price; count += q; });
+  document.getElementById('cart-count').textContent = `${count} ride${count===1?'':'s'} selected`;
+  document.getElementById('cart-total').textContent = `₹${total}`;
+  document.getElementById('pay-btn').disabled = count === 0;
+}
+
+function ticketCardHtml(t) {
+  return `<div class="ticket">
+    <div class="ticket-top">
+      <div class="ticket-park">JALALPUR FUN</div>
+      <div class="ticket-ride">${t.rideName}</div>
+    </div>
+    <div class="ticket-perf"></div>
+    <div class="ticket-bottom">
+      <img class="ticket-qr" src="${t.qrDataUrl}" alt="QR ${t.code}"/>
+      <div>
+        <div class="ticket-code">${t.code}</div>
+        <div class="ticket-price">₹${t.price} · paid via UPI</div>
+        <span class="badge valid">Valid · 1 ride</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+document.getElementById('pay-btn').onclick = async () => {
+  const items = RIDES.filter(r => cart[r.id] > 0).map(r => ({ rideId: r.id, qty: cart[r.id] }));
+  if (!items.length) return;
+
+  const payBtn = document.getElementById('pay-btn');
+  payBtn.disabled = true;
+  payBtn.innerHTML = '<span class="spin"></span> Creating order…';
+
+  try {
+    const orderRes = await fetch('/api/orders/create', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ items }),
+    });
+    const order = await orderRes.json();
+    if (!orderRes.ok) throw new Error(order.error || 'Order creation failed');
+
+    const rzp = new Razorpay({
+      key: order.keyId,
+      amount: order.amount,
+      currency: order.currency,
+      order_id: order.orderId,
+      name: 'Jalalpur Fun',
+      description: 'Ride tickets',
+      theme: { color: '#ff5a1f' },
+      handler: async function (response) {
+        payBtn.innerHTML = '<span class="spin"></span> Confirming payment…';
+        const verifyRes = await fetch('/api/orders/verify', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            orderId: response.razorpay_order_id,
+            paymentId: response.razorpay_payment_id,
+            signature: response.razorpay_signature,
+            items: order.items,
+          }),
+        });
+        const data = await verifyRes.json();
+        if (!verifyRes.ok) {
+          alert('Payment could not be verified: ' + (data.error||''));
+        } else {
+          const area = document.getElementById('tickets-area');
+          area.innerHTML = `<div class="section-title">Your tickets</div><div class="ticket-wrap">${data.tickets.map(ticketCardHtml).join('')}</div>
+            <div class="note">Show the QR (or the code) to the ride operator. Want another lap? Just book again — no need to walk back to the gate.</div>` + area.innerHTML;
+        }
+        Object.keys(cart).forEach(k => cart[k] = 0);
+        renderRides(); updateCartBar();
+        payBtn.disabled = false; payBtn.textContent = 'Pay via UPI';
+      },
+      modal: {
+        ondismiss: function () {
+          payBtn.disabled = false; payBtn.textContent = 'Pay via UPI';
+        }
+      }
+    });
+    rzp.open();
+  } catch (err) {
+    alert('Something went wrong: ' + err.message);
+    payBtn.disabled = false; payBtn.textContent = 'Pay via UPI';
+  }
+};
+
+document.getElementById('dev-skip-btn').onclick = async () => {
+  const items = RIDES.filter(r => cart[r.id] > 0).map(r => ({ rideId: r.id, qty: cart[r.id] }));
+  if (!items.length) { alert('Add at least one ride first.'); return; }
+  const adminKey = prompt('Enter your admin key to bypass payment (dev/testing only):');
+  if (!adminKey) return;
+  const res = await fetch('/api/dev/create-tickets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-app-key': adminKey },
+    body: JSON.stringify({ items }),
+  });
+  const data = await res.json();
+  if (!res.ok) { alert('Failed: ' + (data.error || res.status)); return; }
+  const area = document.getElementById('tickets-area');
+  area.innerHTML = `<div class="section-title">Your tickets (dev bypass — no real payment taken)</div><div class="ticket-wrap">${data.tickets.map(ticketCardHtml).join('')}</div>` + area.innerHTML;
+  Object.keys(cart).forEach(k => cart[k] = 0);
+  renderRides(); updateCartBar();
+};
+
+if (new URLSearchParams(window.location.search).get('dev') === '1') {
+  document.getElementById('dev-panel').style.display = 'block';
+}
+
+loadRides();
+</script>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jalalpur Fun — Staff Scanner</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">JALALPUR<span> FUN</span></div>
+  <div class="tagline">Staff scanner</div>
+  <div style="margin-bottom:18px;">
+    <a class="nav-link" href="/index.html">Book a Ride</a>
+    <a class="nav-link" href="/admin.html">Admin Dashboard</a>
+  </div>
+
+  <div id="login-panel" class="panel">
+    <div class="section-title" style="margin-top:0;">Staff sign-in</div>
+    <div class="input-row">
+      <input class="input" id="staff-key-input" type="password" placeholder="Staff access key" />
+      <button class="btn-secondary" id="login-btn">Sign in</button>
+    </div>
+    <div class="note">Ask your manager for the staff access key. This is set once per device and stays saved.</div>
+  </div>
+
+  <div id="scan-panel" class="panel" style="display:none;">
+    <div class="section-title" style="margin-top:0;">Validate a ticket</div>
+    <div class="input-row">
+      <input class="input" id="code-input" placeholder="JF-XXXXXXXX" />
+      <button class="btn-secondary" id="validate-btn">Validate</button>
+    </div>
+    <button class="btn-secondary" id="cam-btn" style="width:100%;margin-top:4px;">📷 Scan QR with camera</button>
+    <video id="video" class="scan-video" style="display:none;" playsinline muted></video>
+    <div id="result-area"></div>
+    <div class="note">Manual entry always works. Camera scanning uses your browser's built-in QR detector — supported on most Chrome/Edge/Android browsers.</div>
+  </div>
+</div>
+
+<script>
+const KEY_STORAGE = 'jf_staff_key';
+let staffKey = sessionStorage.getItem(KEY_STORAGE) || '';
+
+function showPanel() {
+  if (staffKey) {
+    document.getElementById('login-panel').style.display = 'none';
+    document.getElementById('scan-panel').style.display = 'block';
+  } else {
+    document.getElementById('login-panel').style.display = 'block';
+    document.getElementById('scan-panel').style.display = 'none';
+  }
+}
+
+document.getElementById('login-btn').onclick = () => {
+  const val = document.getElementById('staff-key-input').value.trim();
+  if (!val) return;
+  staffKey = val;
+  sessionStorage.setItem(KEY_STORAGE, val);
+  showPanel();
+};
+
+async function validateCode(rawCode) {
+  const code = (rawCode || '').trim().toUpperCase();
+  if (!code) return;
+  const resultArea = document.getElementById('result-area');
+  resultArea.innerHTML = `<div class="result"><span class="spin"></span></div>`;
+
+  try {
+    const res = await fetch('/api/tickets/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-app-key': staffKey },
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json();
+
+    if (res.status === 401) {
+      staffKey = '';
+      sessionStorage.removeItem(KEY_STORAGE);
+      showPanel();
+      return;
+    }
+    if (res.status === 404) {
+      resultArea.innerHTML = `<div class="result err"><div class="result-icon">❌</div><div class="result-title">Ticket not found</div><div class="result-sub">No ticket matches ${code}.</div></div>`;
+      return;
+    }
+    if (res.status === 409) {
+      const usedTime = new Date(data.ticket.used_at).toLocaleTimeString();
+      resultArea.innerHTML = `<div class="result err"><div class="result-icon">❌</div><div class="result-title">Already used</div><div class="result-sub">${data.ticket.ride_name} ticket was redeemed at ${usedTime}.</div></div>`;
+      return;
+    }
+    if (!res.ok) {
+      resultArea.innerHTML = `<div class="result err"><div class="result-icon">⚠️</div><div class="result-title">Error</div><div class="result-sub">${data.error||'Please try again.'}</div></div>`;
+      return;
+    }
+
+    resultArea.innerHTML = `<div class="result valid"><div class="result-icon">✅</div><div class="result-title">Valid — ${data.ticket.ride_name}</div><div class="result-sub">₹${data.ticket.price} · entry granted. Ticket now marked used.</div></div>`;
+  } catch (err) {
+    resultArea.innerHTML = `<div class="result err"><div class="result-icon">⚠️</div><div class="result-title">Network error</div><div class="result-sub">Could not reach the server. Check connection and try again.</div></div>`;
+  }
+  document.getElementById('code-input').value = '';
+}
+
+document.getElementById('validate-btn').onclick = () => validateCode(document.getElementById('code-input').value);
+document.getElementById('code-input').addEventListener('keydown', e => { if (e.key === 'Enter') validateCode(e.target.value); });
+
+let stream = null, loopId = null, camActive = false;
+document.getElementById('cam-btn').onclick = async () => {
+  if (camActive) { stopCamera(); return; }
+  if (!('BarcodeDetector' in window)) {
+    document.getElementById('result-area').innerHTML = `<div class="result err"><div class="result-icon">⚠️</div><div class="result-title">Camera scan not supported</div><div class="result-sub">This browser lacks native QR detection. Use manual entry instead.</div></div>`;
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    camActive = true;
+    const video = document.getElementById('video');
+    video.style.display = 'block';
+    video.srcObject = stream;
+    await video.play();
+    const detector = new BarcodeDetector({ formats: ['qr_code'] });
+    const loop = async () => {
+      if (!camActive) return;
+      try {
+        const codes = await detector.detect(video);
+        if (codes.length) {
+          const value = codes[0].rawValue;
+          stopCamera();
+          validateCode(value);
+          return;
+        }
+      } catch (e) {}
+      loopId = requestAnimationFrame(loop);
+    };
+    loopId = requestAnimationFrame(loop);
+  } catch (e) {
+    document.getElementById('result-area').innerHTML = `<div class="result err"><div class="result-icon">⚠️</div><div class="result-title">Camera unavailable</div><div class="result-sub">Check camera permissions, or use manual entry.</div></div>`;
+  }
+};
+function stopCamera() {
+  camActive = false;
+  if (loopId) cancelAnimationFrame(loopId);
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  document.getElementById('video').style.display = 'none';
+}
+
+showPanel();
+</script>
+</body>
+</html>
