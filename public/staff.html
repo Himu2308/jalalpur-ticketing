@@ -18,13 +18,15 @@
   <div id="login-panel" class="panel">
     <div class="section-title" style="margin-top:0;">Staff sign-in</div>
     <div class="input-row">
-      <input class="input" id="staff-key-input" type="password" placeholder="Staff access key" />
+      <input class="input" id="staff-key-input" type="password" placeholder="This ride's staff key" />
       <button class="btn-secondary" id="login-btn">Sign in</button>
     </div>
-    <div class="note">Ask your manager for the staff access key. This is set once per device and stays saved.</div>
+    <div id="login-error" class="note" style="color:var(--red);display:none;"></div>
+    <div class="note">Each ride has its own key — ask your manager for the key for the ride this device is stationed at. This device will only be able to validate tickets for that ride.</div>
   </div>
 
   <div id="scan-panel" class="panel" style="display:none;">
+    <div id="ride-badge" style="margin-bottom:10px;font-size:12px;color:var(--chalk-dim);"></div>
     <div class="section-title" style="margin-top:0;">Validate a ticket</div>
     <div class="input-row">
       <input class="input" id="code-input" placeholder="JF-XXXXXXXX" />
@@ -40,12 +42,34 @@
 <script>
 const KEY_STORAGE = 'jf_staff_key';
 let staffKey = sessionStorage.getItem(KEY_STORAGE) || '';
+let assignedRideName = '';
 
-function showPanel() {
-  if (staffKey) {
+async function showPanel() {
+  if (!staffKey) {
+    document.getElementById('login-panel').style.display = 'block';
+    document.getElementById('scan-panel').style.display = 'none';
+    return;
+  }
+  // Confirm the key with the server and find out which ride it's locked to.
+  try {
+    const res = await fetch('/api/staff/whoami', { headers: { 'x-app-key': staffKey } });
+    if (!res.ok) {
+      staffKey = '';
+      sessionStorage.removeItem(KEY_STORAGE);
+      const err = document.getElementById('login-error');
+      err.textContent = 'That key was not recognized. Check it and try again.';
+      err.style.display = 'block';
+      document.getElementById('login-panel').style.display = 'block';
+      document.getElementById('scan-panel').style.display = 'none';
+      return;
+    }
+    const data = await res.json();
+    assignedRideName = data.rideName;
+    document.getElementById('login-error').style.display = 'none';
     document.getElementById('login-panel').style.display = 'none';
     document.getElementById('scan-panel').style.display = 'block';
-  } else {
+    document.getElementById('ride-badge').textContent = `Signed in as: ${assignedRideName} operator`;
+  } catch (e) {
     document.getElementById('login-panel').style.display = 'block';
     document.getElementById('scan-panel').style.display = 'none';
   }
@@ -86,6 +110,10 @@ async function validateCode(rawCode) {
     if (res.status === 409) {
       const usedTime = new Date(data.ticket.used_at).toLocaleTimeString();
       resultArea.innerHTML = `<div class="result err"><div class="result-icon">❌</div><div class="result-title">Already used</div><div class="result-sub">${data.ticket.ride_name} ticket was redeemed at ${usedTime}.</div></div>`;
+      return;
+    }
+    if (res.status === 403 && data.error === 'wrong_ride') {
+      resultArea.innerHTML = `<div class="result err"><div class="result-icon">🚫</div><div class="result-title">Wrong ride</div><div class="result-sub">This ticket is for ${data.ticket.ride_name}, but this device is signed in for ${data.assignedRideName}. Send the guest to the right ride.</div></div>`;
       return;
     }
     if (!res.ok) {

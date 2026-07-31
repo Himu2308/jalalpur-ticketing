@@ -28,9 +28,7 @@ function genCode() {
 }
 
 // ---------- auth middleware ----------
-// Simple shared-secret auth for staff/admin devices. Good enough for a
-// small team on trusted devices. If you outgrow this, swap for per-staff
-// login (e.g. short PINs issued per shift) without changing anything else.
+// Simple shared-secret auth for admin devices.
 function requireKey(envVar) {
   return (req, res, next) => {
     const key = req.header('x-app-key');
@@ -41,9 +39,42 @@ function requireKey(envVar) {
   };
 }
 
+// ---------- per-ride staff auth ----------
+// Each ride gets its own staff key, set as STAFF_KEY_<RIDE_ID> in the
+// environment (e.g. STAFF_KEY_GOKART). Whichever key a device signs in
+// with determines the ONE ride that device is allowed to validate tickets
+// for — enforced here on the server, not just hidden in the UI, so a
+// Go-Kart operator's device can never validate a Zip Line ticket even if
+// they wanted to.
+function findRideForStaffKey(key) {
+  if (!key) return null;
+  return RIDES.find((r) => {
+    const envVar = 'STAFF_KEY_' + r.id.toUpperCase();
+    return process.env[envVar] && process.env[envVar] === key;
+  }) || null;
+}
+
+function requireRideStaffKey(req, res, next) {
+  const key = req.header('x-app-key');
+  const ride = findRideForStaffKey(key);
+  if (!ride) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  req.assignedRide = ride;
+  next();
+}
+
 // ---------- public: rides ----------
 app.get('/api/rides', (req, res) => {
   res.json(RIDES);
+});
+
+// ---------- public: config ----------
+// Lets the frontend know whether to show the real Razorpay checkout or the
+// no-payment demo flow. Controlled entirely by the DEMO_MODE env var —
+// leave it unset (or "false") for real payments.
+app.get('/api/config', (req, res) => {
+  res.json({ demoMode: process.env.DEMO_MODE === 'true' });
 });
 
 // ---------- payments: create order ----------
@@ -138,17 +169,19 @@ app.post('/api/orders/verify', async (req, res) => {
   }
 });
 
-// ---------- DEV ONLY: issue tickets without going through Razorpay ----------
-// Use this to test ticket generation / staff scanning / admin dashboard while
-// your Razorpay account issue is being sorted out by their support team.
-// Protected by ADMIN_KEY so guests can never trigger a free ticket with it.
-// Delete this whole route before you go live.
-app.post('/api/dev/create-tickets', requireKey('ADMIN_KEY'), async (req, res) => {
+// ---------- demo: create tickets with no real payment ----------
+// Only active when DEMO_MODE=true in the environment. Lets you demo the
+// full booking → scan → admin flow without touching Razorpay at all.
+// Turn this OFF (unset DEMO_MODE, or set it to "false") before real launch.
+app.post('/api/tickets/demo-create', async (req, res) => {
+  if (process.env.DEMO_MODE !== 'true') {
+    return res.status(403).json({ error: 'Demo mode is not enabled' });
+  }
   try {
-    const items = req.body.items || []; // [{ rideId, qty }]
+    const items = req.body.items || [];
     const insert = db.prepare(`
       INSERT INTO tickets (code, ride_id, ride_name, price, status, razorpay_order_id, razorpay_payment_id, created_at)
-      VALUES (?, ?, ?, ?, 'valid', 'DEV_BYPASS', 'DEV_BYPASS', ?)
+      VALUES (?, ?, ?, ?, 'valid', 'DEMO', 'DEMO', ?)
     `);
     const tickets = [];
     for (const item of items) {
@@ -165,19 +198,33 @@ app.post('/api/dev/create-tickets', requireKey('ADMIN_KEY'), async (req, res) =>
     }
     res.json({ tickets });
   } catch (err) {
-    console.error('dev ticket create failed', err);
-    res.status(500).json({ error: 'Could not create dev tickets' });
+    console.error('demo create failed', err);
+    res.status(500).json({ error: 'Could not create demo tickets' });
   }
 });
 
+// ---------- staff: who am I signed in as ----------
+// Frontend calls this right after sign-in to confirm which ride this
+// device/key is locked to, and display it clearly to the operator.
+app.get('/api/staff/whoami', requireRideStaffKey, (req, res) => {
+  res.json({ rideId: req.assignedRide.id, rideName: req.assignedRide.name });
+});
+
 // ---------- staff: validate a ticket ----------
-app.post('/api/tickets/validate', requireKey('STAFF_KEY'), (req, res) => {
+// A device can only validate tickets for the ONE ride its key is assigned
+// to (see requireRideStaffKey above). Trying to validate a ticket for a
+// different ride is rejected with 403, regardless of what the frontend
+// sends — this can't be bypassed from the browser.
+app.post('/api/tickets/validate', requireRideStaffKey, (req, res) => {
   const code = (req.body.code || '').trim().toUpperCase();
   if (!code) return res.status(400).json({ error: 'Code required' });
 
   const ticket = db.prepare('SELECT * FROM tickets WHERE code = ?').get(code);
   if (!ticket) {
     return res.status(404).json({ error: 'not_found' });
+  }
+  if (ticket.ride_id !== req.assignedRide.id) {
+    return res.status(403).json({ error: 'wrong_ride', ticket, assignedRideName: req.assignedRide.name });
   }
   if (ticket.status === 'used') {
     return res.status(409).json({ error: 'already_used', ticket });

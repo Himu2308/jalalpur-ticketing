@@ -16,8 +16,8 @@ cp .env.example .env
 Open `.env` and fill in:
 
 - `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` — from your Razorpay dashboard (see step 2)
-- `STAFF_KEY` — any long random string, e.g. `park-staff-9f2a7c`
-- `ADMIN_KEY` — a different long random string, only you should know this
+- `ADMIN_KEY` — a long random string, only you should know this
+- `STAFF_KEY_GOKART`, `STAFF_KEY_ROCKET`, etc. — one long random string **per ride**. Whichever key a staff device signs in with, that device can only validate tickets for that specific ride (enforced by the server, not just the UI) — a Go-Kart operator's phone can't validate a Zip Line ticket even by accident.
 
 Then run:
 
@@ -59,7 +59,7 @@ This means a ticket can only ever be created after a real, verified payment — 
 
 ## 5. Day-to-day usage
 
-- **Staff devices**: open `/staff.html` on a phone/tablet at each ride, sign in once with the staff key (it stays saved for that browser session)
+- **Staff devices**: open `/staff.html` on a phone/tablet at each ride, sign in with that ride's own key (it stays saved for that browser session). The screen confirms which ride the device is locked to right after sign-in.
 - **Your phone/laptop**: open `/admin.html`, sign in with the admin key, to check revenue anytime
 - **Guests**: `/index.html` — you can put this link in your Instagram bio, a QR poster at the entrance, or WhatsApp
 
