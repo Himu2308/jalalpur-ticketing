@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,6 +16,8 @@
     <a class="nav-link" href="/staff.html">Staff Scanner</a>
     <a class="nav-link" href="/admin.html">Admin Dashboard</a>
   </div>
+
+  <div id="demo-banner"></div>
 
   <div id="ride-grid" class="ride-grid"></div>
 
@@ -37,6 +40,21 @@
 <script>
 const cart = {};
 let RIDES = [];
+let DEMO_MODE = false;
+
+async function loadConfig() {
+  try {
+    const res = await fetch('/api/config');
+    const cfg = await res.json();
+    DEMO_MODE = !!cfg.demoMode;
+    if (DEMO_MODE) {
+      document.getElementById('demo-banner').innerHTML =
+        `<div style="background:rgba(244,196,48,0.15);border:1px solid rgba(244,196,48,0.4);color:#f4c430;padding:10px 14px;border-radius:8px;font-size:12px;font-weight:700;margin-bottom:16px;">
+          ⚠ DEMO MODE — no real payment is taken. Turn this off before real launch.
+        </div>`;
+    }
+  } catch (e) {}
+}
 
 async function loadRides() {
   const res = await fetch('/api/rides');
@@ -100,6 +118,28 @@ document.getElementById('pay-btn').onclick = async () => {
 
   const payBtn = document.getElementById('pay-btn');
   payBtn.disabled = true;
+
+  if (DEMO_MODE) {
+    payBtn.innerHTML = '<span class="spin"></span> Generating demo tickets…';
+    try {
+      const res = await fetch('/api/tickets/demo-create', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ items }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Demo ticket creation failed');
+      const area = document.getElementById('tickets-area');
+      area.innerHTML = `<div class="section-title">Your tickets</div><div class="ticket-wrap">${data.tickets.map(ticketCardHtml).join('')}</div>
+        <div class="note">Show the QR (or the code) to the ride operator. Want another lap? Just book again — no need to walk back to the gate.</div>` + area.innerHTML;
+      Object.keys(cart).forEach(k => cart[k] = 0);
+      renderRides(); updateCartBar();
+    } catch (err) {
+      alert('Something went wrong: ' + err.message);
+    }
+    payBtn.disabled = false; payBtn.textContent = 'Pay via UPI';
+    return;
+  }
+
   payBtn.innerHTML = '<span class="spin"></span> Creating order…';
 
   try {
@@ -176,6 +216,7 @@ if (new URLSearchParams(window.location.search).get('dev') === '1') {
   document.getElementById('dev-panel').style.display = 'block';
 }
 
+loadConfig();
 loadRides();
 </script>
 </body>

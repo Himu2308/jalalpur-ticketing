@@ -78,12 +78,9 @@ app.get('/api/config', (req, res) => {
 });
 
 // ---------- payments: create order ----------
-// Guest sends what's in their cart; server recalculates the price from
-// rides.js (never trusts a price sent by the client) and asks Razorpay
-// to create an order for that exact amount.
 app.post('/api/orders/create', async (req, res) => {
   try {
-    const items = req.body.items || []; // [{ rideId, qty }]
+    const items = req.body.items || [];
     let amount = 0;
     const validatedItems = [];
     for (const item of items) {
@@ -98,7 +95,7 @@ app.post('/api/orders/create', async (req, res) => {
     }
 
     const order = await razorpay.orders.create({
-      amount: amount * 100, // paise
+      amount: amount * 100,
       currency: 'INR',
       receipt: 'jf_' + Date.now(),
     });
@@ -117,8 +114,6 @@ app.post('/api/orders/create', async (req, res) => {
 });
 
 // ---------- payments: verify + issue tickets ----------
-// Only after Razorpay's signature checks out do we create tickets. This is
-// what stops someone from calling the API directly and getting a free ride.
 app.post('/api/orders/verify', async (req, res) => {
   try {
     const { orderId, paymentId, signature, items } = req.body;
@@ -151,13 +146,8 @@ app.post('/api/orders/verify', async (req, res) => {
         insert.run(code, ride.id, ride.name, ride.price, orderId, paymentId, createdAt);
         const qrDataUrl = await QRCode.toDataURL(code, { margin: 2, width: 220 });
         tickets.push({
-          code,
-          rideId: ride.id,
-          rideName: ride.name,
-          price: ride.price,
-          status: 'valid',
-          createdAt,
-          qrDataUrl,
+          code, rideId: ride.id, rideName: ride.name, price: ride.price,
+          status: 'valid', createdAt, qrDataUrl,
         });
       }
     }
@@ -170,9 +160,6 @@ app.post('/api/orders/verify', async (req, res) => {
 });
 
 // ---------- demo: create tickets with no real payment ----------
-// Only active when DEMO_MODE=true in the environment. Lets you demo the
-// full booking → scan → admin flow without touching Razorpay at all.
-// Turn this OFF (unset DEMO_MODE, or set it to "false") before real launch.
 app.post('/api/tickets/demo-create', async (req, res) => {
   if (process.env.DEMO_MODE !== 'true') {
     return res.status(403).json({ error: 'Demo mode is not enabled' });
@@ -204,17 +191,11 @@ app.post('/api/tickets/demo-create', async (req, res) => {
 });
 
 // ---------- staff: who am I signed in as ----------
-// Frontend calls this right after sign-in to confirm which ride this
-// device/key is locked to, and display it clearly to the operator.
 app.get('/api/staff/whoami', requireRideStaffKey, (req, res) => {
   res.json({ rideId: req.assignedRide.id, rideName: req.assignedRide.name });
 });
 
 // ---------- staff: validate a ticket ----------
-// A device can only validate tickets for the ONE ride its key is assigned
-// to (see requireRideStaffKey above). Trying to validate a ticket for a
-// different ride is rejected with 403, regardless of what the frontend
-// sends — this can't be bypassed from the browser.
 app.post('/api/tickets/validate', requireRideStaffKey, (req, res) => {
   const code = (req.body.code || '').trim().toUpperCase();
   if (!code) return res.status(400).json({ error: 'Code required' });
